@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>MAGNET</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html,body{height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:none}
+body{font-family:"Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;color:#e6e9ff}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;background:#000}
+.ui{position:fixed;left:0;right:0;z-index:2;display:flex;flex-direction:column;align-items:center;pointer-events:none;transition:opacity .9s ease}
+body.touch .ui,body.touch #rs{opacity:.25}
+#top{top:calc(env(safe-area-inset-top,0px) + 26px)}
+h1{font-weight:200;font-size:12px;letter-spacing:.9em;padding-left:.9em;color:rgba(232,236,255,.82)}
+#sub{margin-top:9px;font-size:8px;letter-spacing:.42em;padding-left:.42em;color:rgba(200,208,255,.4);transition:opacity 1.4s ease}
+body.hush #sub{opacity:0}
+#bot{bottom:calc(env(safe-area-inset-bottom,0px) + 8px);flex-direction:row;justify-content:center}
+.b{pointer-events:auto;position:relative;background:none;border:0;outline:0;cursor:pointer;color:rgba(214,220,255,.34);font:400 9.5px/1 "Helvetica Neue",Helvetica,Arial,sans-serif;letter-spacing:.3em;padding:18px 9px 22px 12px;text-transform:uppercase;transition:color .5s,text-shadow .5s}
+.b.on{color:#f2f4ff;text-shadow:0 0 12px rgba(155,92,255,.85)}
+.b.on::after{content:"";position:absolute;left:50%;bottom:11px;width:3px;height:3px;margin-left:-1px;border-radius:50%;background:#9b5cff;box-shadow:0 0 8px #9b5cff}
+.b:focus-visible{color:#fff;text-shadow:0 0 10px #5fe0ff}
+#rs{position:fixed;z-index:2;top:calc(env(safe-area-inset-top,0px) + 12px);right:4px;transition:opacity .9s ease}
+@media(hover:hover){.b:hover{color:rgba(240,243,255,.8)}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui" id="top"><h1>MAGNET</h1><div id="sub">MOVE YOUR FINGER. BEND THE FIELD.</div></div>
+<button class="b" id="rs" aria-label="Reset">Reset</button>
+<div class="ui" id="bot">
+<button class="b on" data-m="0">Attract</button><button class="b" data-m="1">Repel</button><button class="b" data-m="2">Orbit</button><button class="b" data-m="3">Polarity</button>
+</div>
+<script>
+(()=>{
+'use strict';
+const cv=document.getElementById('c'),cx=cv.getContext('2d',{alpha:false});
+const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MAXN=12000,TAU=6.2832;
+const mk=n=>new Float32Array(n);
+const X=mk(MAXN),Y=mk(MAXN),VX=mk(MAXN),VY=mk(MAXN),HX=mk(MAXN),HY=mk(MAXN),K=mk(MAXN),PH=mk(MAXN),BR=mk(MAXN),FL=mk(MAXN),OX=mk(MAXN),OY=mk(MAXN),LN=mk(MAXN);
+const BK=new Uint8Array(MAXN),CL=new Uint8Array(MAXN),cnt=new Int32Array(12);
+let W=0,H=0,D=1,N=0,R=150,iR2=1,core=18,iRn2=1,Ak=2300;
+
+function seed(){
+  for(let i=0;i<MAXN;i++){
+    const z=Math.random(),a=Math.random()*TAU,r=Math.random();
+    X[i]=HX[i]=Math.random()*W;Y[i]=HY[i]=Math.random()*H;VX[i]=VY[i]=FL[i]=0;
+    K[i]=(.5+.95*z)*(.85+.3*Math.random());PH[i]=Math.random()*TAU;
+    BR[i]=.1+.46*z*z+.1*Math.random();OX[i]=Math.cos(a);OY[i]=Math.sin(a);
+    CL[i]=r<.7?0:r<.88?1:2;
+  }
+}
+function size(){
+  const nw=innerWidth,nh=innerHeight;D=Math.min(devicePixelRatio||1,2);
+  if(W){const sx=nw/W,sy=nh/H;for(let i=0;i<MAXN;i++){X[i]*=sx;HX[i]*=sx;Y[i]*=sy;HY[i]*=sy}}
+  W=nw;H=nh;cv.width=Math.round(W*D);cv.height=Math.round(H*D);
+  cx.setTransform(D,0,0,D,0,0);cx.fillStyle='#000';cx.fillRect(0,0,W,H);
+  const m=Math.min(W,H);R=.42*m;iR2=1/(R*R);core=.035*m+6;iRn2=1/Math.pow(.14*m,2);Ak=2300*Math.sqrt(R/160);
+}
+size();seed();
+{
+  const cores=navigator.hardwareConcurrency||4,mob=matchMedia('(pointer:coarse)').matches;
+  N=Math.round(Math.max(1800,Math.min(MAXN,(mob?5600:9500)*(cores>=8?1.25:cores<=4?.75:1),W*H/55)));
+  if(RM)N=Math.round(N*.6);
+}
+
+/* ---------- state ---------- */
+const S=[0,1,2].map(()=>({id:-1,on:0,down:0,tgt:1,x:0,y:0,tx:0,ty:0,vx:0,vy:0,s:0,hold:0,t0:0,x0:0,y0:0,mv:0,lt:0,hd:0,hasH:0,turn:0}));
+const SX=mk(8),SY=mk(8),SS=mk(8),SVX=mk(8),SVY=mk(8),SQ=mk(8),SG=mk(8),SM=mk(8);
+const PXA=mk(8),PYA=mk(8),PAG=mk(8).fill(1),PST=mk(8),PMX=mk(8),PDU=mk(8);
+const QX=mk(8),QY=mk(8),QR=mk(8),QW=mk(8),QA=mk(8),QF=mk(8);
+const RAD=[1,-1.05,.3,.1],TAN=[.12,.06,1.15,.35],MW=[1,0,0,0];
+let mode=0,press=0,lastIn=performance.now(),used=false,vortex=0,vsign=1,flick=0,resetT=0,calm=0;
+let tapT=0,tapX=0,tapY=0,lastFlick=0,pi=0,tch=false,hs=false,raf=0,last=0,t=0,acc=0,fc=0,pgx=0,pgy=0;
+const wake=()=>{lastIn=performance.now();used=true};
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+
+function pulse(x,y,st,mx,du){
+  let k=-1;for(let j=0;j<8;j++)if(PAG[j]>=1){k=j;break}
+  if(k<0)k=pi=(pi+1)&7;
+  PXA[k]=x;PYA[k]=y;PAG[k]=0;PST[k]=st*(RM?.6:1);PMX[k]=mx;PDU[k]=du;
+}
+function shock(x,y){
+  const m=Math.max(W,H),rr=m*.35;
+  pulse(x,y,2.4,m*.8,1.5);
+  for(let i=0;i<N;i++){
+    const dx=X[i]-x,dy=Y[i]-y,d=Math.sqrt(dx*dx+dy*dy)+.5;
+    if(d<rr){const f=Math.pow(1-d/rr,2)*(RM?500:1000)*K[i];VX[i]+=dx/d*f;VY[i]+=dy/d*f;FL[i]=Math.max(FL[i],Math.min(1,f/700))}
+  }
+}
+function tap(x,y,ts){
+  if(ts-tapT<340&&Math.hypot(x-tapX,y-tapY)<60){shock(x,y);tapT=0}
+  else{pulse(x,y,1,Math.min(W,H)*.5,.9);tapT=ts;tapX=x;tapY=y}
+}
+function reset(){
+  resetT=1.9;vortex=0;flick=0;for(let j=0;j<8;j++)PAG[j]=1;
+  for(let i=0;i<MAXN;i++)FL[i]=0;
+  pulse(W/2,H/2,.4,Math.max(W,H)*.6,1.3);wake();
+}
+const bt=[...document.querySelectorAll('[data-m]')];
+function setMode(m){
+  if(m===mode)return;mode=m;
+  bt.forEach((b,i)=>b.classList.toggle('on',i===m));
+  pulse(W/2,H/2,.35,Math.max(W,H)*.6,1.3);wake();
+}
+bt.forEach((b,i)=>b.addEventListener('click',()=>setMode(i)));
+document.getElementById('rs').addEventListener('click',reset);
+addEventListener('keydown',e=>{const k=e.key;if(k>='1'&&k<='4')setMode(+k-1);else if(k==='r'||k==='R')reset()});
+
+/* ---------- input ---------- */
+function find(id){for(let j=0;j<3;j++)if(S[j].id===id&&S[j].on)return S[j];return null}
+function slot(id){
+  const f=find(id);if(f)return f;
+  for(let j=0;j<3;j++)if(!S[j].on&&S[j].s<.05)return S[j];
+  let b=null;for(let j=0;j<3;j++)if(!S[j].on&&(!b||S[j].s<b.s))b=S[j];
+  return b;
+}
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(press>=2&&e.pointerType!=='mouse'){press=3;reset();return}
+  const s=slot(e.pointerId);if(!s)return;
+  s.id=e.pointerId;s.on=1;s.down=1;s.tgt=1;s.tx=e.clientX;s.ty=e.clientY;
+  if(s.s<.05){s.x=s.tx;s.y=s.ty}
+  s.vx=s.vy=0;s.t0=e.timeStamp;s.lt=e.timeStamp;s.x0=s.tx;s.y0=s.ty;s.mv=0;s.hold=0;s.hasH=0;s.turn=0;
+  try{cv.setPointerCapture(e.pointerId)}catch(_){}
+  press++;wake();
+},{passive:false});
+cv.addEventListener('pointermove',e=>{
+  let s=find(e.pointerId);
+  if(!s){
+    if(e.pointerType!=='mouse')return;
+    s=slot(e.pointerId);if(!s)return;
+    s.id=e.pointerId;s.on=1;s.down=0;s.tgt=.55;s.tx=s.x=e.clientX;s.ty=s.y=e.clientY;s.vx=s.vy=0;s.hasH=0;s.turn=0;s.lt=e.timeStamp;
+  }
+  e.preventDefault();
+  const dt=Math.max(.004,(e.timeStamp-s.lt)/1000),dx=e.clientX-s.tx,dy=e.clientY-s.ty;
+  s.lt=e.timeStamp;s.tx=e.clientX;s.ty=e.clientY;
+  s.vx+=(clamp(dx/dt,-4500,4500)-s.vx)*.5;s.vy+=(clamp(dy/dt,-4500,4500)-s.vy)*.5;
+  const sp=Math.sqrt(s.vx*s.vx+s.vy*s.vy);
+  s.mv=Math.max(s.mv,Math.abs(s.tx-s.x0)+Math.abs(s.ty-s.y0));
+  if(dx*dx+dy*dy>9){
+    const h=Math.atan2(dy,dx);
+    if(s.hasH){
+      let d=h-s.hd;if(d>Math.PI)d-=TAU;else if(d<-Math.PI)d+=TAU;
+      s.turn=s.turn*Math.exp(-dt*1.1)+d;
+      if(Math.abs(s.turn)>5.4&&sp>420){vortex=1;vsign=s.turn>0?1:-1;s.turn=0}
+    }
+    s.hd=h;s.hasH=1;
+  }
+  if(sp>1700&&e.timeStamp-lastFlick>240){lastFlick=e.timeStamp;flick=1;pulse(s.tx,s.ty,.5,Math.min(W,H)*.5,.9)}
+  wake();
+},{passive:false});
+function up(e,cancel){
+  const s=find(e.pointerId);if(!s)return;
+  if(s.down){
+    press=Math.max(0,press-1);
+    if(!cancel&&e.timeStamp-s.t0<260&&s.mv<14)tap(s.tx,s.ty,e.timeStamp);
+  }
+  if(e.pointerType==='mouse'&&!cancel){s.down=0;s.tgt=.55;return}
+  s.on=0;s.down=0;s.id=-1;wake();
+}
+cv.addEventListener('pointerup',e=>up(e,false));
+cv.addEventListener('pointercancel',e=>up(e,true));
+cv.addEventListener('lostpointercapture',e=>up(e,true));
+cv.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'){const s=find(e.pointerId);if(s&&!s.down){s.on=0;s.id=-1}}});
+addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+addEventListener('resize',size);
+
+/* ---------- rendering tables ---------- */
+const COL=[[226,232,255],[155,100,255],[90,222,255]],ALP=[.3,.52,.78,1],LW=[.7,.85,1.1,1.5];
+const STY=[],GLO=[];
+for(let c=0;c<3;c++){
+  for(let l=0;l<4;l++)STY.push('rgba('+COL[c].join(',')+','+ALP[l]+')');
+  GLO.push('rgba('+COL[c].join(',')+',.085)');
+}
+
+/* ---------- main loop ---------- */
+function frame(ts){
+  raf=requestAnimationFrame(frame);
+  let dt=(ts-last)/1000;last=ts;if(dt<=0)return;if(dt>.034)dt=.034;t+=dt;
+  acc+=dt;
+  if(++fc>=50){const av=acc/fc;acc=0;fc=0;if(av>.024&&N>1500)N=Math.floor(N*.85)}
+
+  const idle=(performance.now()-lastIn)/1000;
+  calm+=((idle>5?1:0)-calm)*(1-Math.exp(-dt*(idle>5?.5:3)));
+  const mr=1-Math.exp(-dt*3.2);
+  let A=0,T=0;
+  for(let m=0;m<4;m++){MW[m]+=((m===mode?1:0)-MW[m])*mr;A+=MW[m]*RAD[m];T+=MW[m]*TAN[m]}
+  const P=MW[3];
+  vortex=Math.max(0,vortex-dt*.42);flick=Math.max(0,flick-dt*4);
+  T+=vsign*vortex*2.4;A*=1+.3*vortex;
+  if(resetT>0)resetT=Math.max(0,resetT-dt);
+
+  /* sources */
+  let ns=0;const kA=1-Math.exp(-dt*26),vd=Math.exp(-dt*7);
+  for(let j=0;j<3;j++){
+    const s=S[j];if(s.s<.004&&!s.on){s.s=0;continue}
+    s.s+=((s.on?s.tgt:0)-s.s)*(1-Math.exp(-dt*(s.on?9:4.2)));
+    s.vx*=vd;s.vy*=vd;
+    if(s.on){
+      s.x+=(s.tx-s.x)*kA;s.y+=(s.ty-s.y)*kA;
+      const sp=Math.sqrt(s.vx*s.vx+s.vy*s.vy);
+      if(s.down&&sp<70)s.hold+=dt;else s.hold=Math.max(0,s.hold-dt*2.5);
+    }else s.hold=Math.max(0,s.hold-dt*2.5);
+    SX[ns]=s.x;SY[ns]=s.y;SS[ns]=s.s*(1+Math.min(2.2,s.hold*.75));SVX[ns]=s.vx;SVY[ns]=s.vy;SG[ns]=1;SM[ns]=1;ns++;
+  }
+  if(calm>.01){
+    const gk=RM?.4:1,gx=W/2+Math.sin(t*.21*gk)*W*.36,gy=H/2+Math.sin(t*.33*gk+1.3)*H*.3;
+    SX[ns]=gx;SY[ns]=gy;SS[ns]=(RM?.3:.55)*calm;SVX[ns]=clamp((gx-pgx)/dt,-600,600);SVY[ns]=clamp((gy-pgy)/dt,-600,600);SG[ns]=1;SM[ns]=0;ns++;
+  }
+  if(calm>.01){pgx=SX[ns-1];pgy=SY[ns-1]}else{pgx=W/2;pgy=H/2}
+  for(let j=0;j<ns;j++)SQ[j]=(j&1)?-1:1;
+  if(P>.02&&ns===1){
+    const d=.3*Math.min(W,H),a=t*.5;
+    SX[1]=SX[0]+Math.cos(a)*d;SY[1]=SY[0]+Math.sin(a)*d;SS[1]=SS[0];SVX[1]=SVY[1]=0;SQ[1]=-1;SG[1]=0;SM[1]=P;ns=2;
+  }
+
+  /* pulses */
+  let np=0;
+  for(let j=0;j<8;j++){
+    if(PAG[j]>=1)continue;
+    PAG[j]=Math.min(1,PAG[j]+dt/PDU[j]);
+    const a=PAG[j],e=1-Math.pow(1-a,3),w=PMX[j]*.1+22,fa=1-a;
+    QX[np]=PXA[j];QY[np]=PYA[j];QR[np]=PMX[j]*e;QW[np]=1/w;QA[np]=PST[j]*3800*Math.pow(fa,1.5);QF[np]=fa*.85;np++;
+  }
+
+  /* physics */
+  const ex=Math.exp(-dt*(.85+(resetT>0?5.5*Math.min(1,resetT):0))),vmax=RM?650:1500,vm2=vmax*vmax;
+  const fd=Math.exp(-dt*3.4),ro=1-Math.exp(-dt*12);
+  const amb=(12+34*calm)*(RM?.5:1),rs=resetT>0?Math.min(1,resetT*2)*13:0;
+  const en=1.6*(1+1.4*flick),c2=core*core,cr=core*1.6;
+  cnt.fill(0);
+  for(let i=0;i<N;i++){
+    const k=K[i],ph=PH[i];let px=X[i],py=Y[i],vx=VX[i],vy=VY[i];
+    let ax=amb*(Math.sin(py*.006+t*.31+ph)+.6*Math.sin(px*.011-t*.23+py*.007))+16*Math.sin(t*.7+ph*5.1);
+    let ay=amb*(Math.cos(px*.006+t*.27+ph*1.7)+.6*Math.cos(py*.011+t*.19-px*.007))+16*Math.cos(t*.62+ph*3.7);
+    let bx=0,by=0,fl=FL[i];
+    for(let s=0;s<ns;s++){
+      const dx=SX[s]-px,dy=SY[s]-py,r2=dx*dx+dy*dy+1,r=Math.sqrt(r2),nx=dx/r,ny=dy/r;
+      if(SG[s]){
+        const f=SS[s]*k/(1+r2*iR2)*r/(r+core)*Ak,g=1/(1+r2*iRn2);
+        ax+=(nx*A-ny*T)*f+SVX[s]*g*g*en*k*SS[s];
+        ay+=(ny*A+nx*T)*f+SVY[s]*g*g*en*k*SS[s];
+      }
+      if(P>.02){
+        const w=SQ[s]*SS[s]*R/(r2+c2);bx-=dx*w;by-=dy*w;
+        if(r<cr){const rp=(1-r/cr)*P*SS[s]*2600;ax-=nx*rp;ay-=ny*rp}
+      }
+    }
+    if(P>.02){
+      const m=Math.sqrt(bx*bx+by*by);
+      if(m>1e-4){const sat=P*m/(m+.5)*Ak*.9*k;ax+=bx/m*sat;ay+=by/m*sat}
+    }
+    for(let q=0;q<np;q++){
+      const dx=px-QX[q],dy=py-QY[q],d=Math.sqrt(dx*dx+dy*dy)+.01,u=(d-QR[q])*QW[q];
+      if(u<1&&u>-1){const gg=1-u*u,g=gg*QA[q];ax+=dx/d*g;ay+=dy/d*g;const f=gg*QF[q];if(f>fl)fl=f}
+    }
+    if(rs){ax+=(HX[i]-px)*rs;ay+=(HY[i]-py)*rs}
+    let a2=ax*ax+ay*ay;
+    if(a2>1.44e8){const c=12000/Math.sqrt(a2);ax*=c;ay*=c;a2=1.44e8}
+    if(a2>1.2e7){const fa=Math.min(1,(Math.sqrt(a2)-3500)/5000);if(fa>fl)fl=fa}
+    vx=(vx+ax*dt)*ex;vy=(vy+ay*dt)*ex;
+    let s2=vx*vx+vy*vy;
+    if(s2>vm2){const c=vmax/Math.sqrt(s2);vx*=c;vy*=c;s2=vm2}
+    px+=vx*dt;py+=vy*dt;
+    if(px<0){px=0;vx=-vx*.4}else if(px>W){px=W;vx=-vx*.4}
+    if(py<0){py=0;vy=-vy*.4}else if(py>H){py=H;vy=-vy*.4}
+    X[i]=px;Y[i]=py;VX[i]=vx;VY[i]=vy;
+
+    /* filing orientation: velocity when fast, field direction when slow */
+    const sp=Math.sqrt(s2);let tx,ty;
+    if(sp>250){tx=vx/sp;ty=vy/sp}
+    else{const am=Math.sqrt(a2);if(am>120){tx=ax/am;ty=ay/am}else{tx=OX[i];ty=OY[i]}}
+    let ox=OX[i],oy=OY[i];
+    if(ox*tx+oy*ty<0){tx=-tx;ty=-ty}
+    ox+=(tx-ox)*ro;oy+=(ty-oy)*ro;
+    const il=1/(Math.sqrt(ox*ox+oy*oy)+1e-6);OX[i]=ox*il;OY[i]=oy*il;
+
+    FL[i]=fl*fd;
+    const lum=BR[i]+sp*.0004+fl*.7,lv=lum<.28?0:lum<.5?1:lum<.78?2:3,b=CL[i]*4+lv;
+    BK[i]=b;cnt[b]++;
+    LN[i]=.4+.5*BR[i]+Math.min(sp*dt*.55,13)+fl;
+  }
+
+  /* draw */
+  cx.globalCompositeOperation='source-over';
+  cx.fillStyle='rgba(0,0,0,'+Math.min(1,(1-Math.exp(-dt*(RM?22:11)))).toFixed(3)+')';
+  cx.fillRect(0,0,W,H);
+  cx.globalCompositeOperation='lighter';cx.lineCap='round';
+  for(let b=0;b<12;b++){
+    if(!cnt[b])continue;
+    const lv=b&3;
+    cx.beginPath();
+    for(let i=0;i<N;i++){
+      if(BK[i]!==b)continue;
+      const l=LN[i],ox=OX[i]*l,oy=OY[i]*l;
+      cx.moveTo(X[i]-ox,Y[i]-oy);cx.lineTo(X[i]+ox,Y[i]+oy);
+    }
+    if(lv===3&&!RM){cx.strokeStyle=GLO[b>>2];cx.lineWidth=4.5;cx.stroke()}
+    cx.strokeStyle=STY[b];cx.lineWidth=LW[lv];cx.stroke();
+  }
+  /* rings + poles */
+  cx.lineWidth=1;
+  for(let q=0;q<np;q++){
+    const f=QF[q]/.85,al=.32*f*f;
+    if(al<.004)continue;
+    cx.strokeStyle='rgba(185,165,255,'+al.toFixed(3)+')';cx.beginPath();cx.arc(QX[q],QY[q],Math.max(.5,QR[q]),0,TAU);cx.stroke();
+  }
+  for(let j=0;j<ns;j++){
+    if(SM[j]<.02)continue;
+    const al=.3*SM[j]*Math.min(1,SS[j]);if(al<.01)continue;
+    cx.strokeStyle=(SQ[j]>0?'rgba(170,140,255,':'rgba(110,225,255,')+al.toFixed(3)+')';
+    cx.beginPath();cx.arc(SX[j],SY[j],6,0,TAU);cx.stroke();
+  }
+
+  /* ui state */
+  const th=press>0;if(th!==tch){tch=th;document.body.classList.toggle('touch',th)}
+  const hu=used&&idle<6;if(hu!==hs){hs=hu;document.body.classList.toggle('hush',hu)}
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){cancelAnimationFrame(raf);raf=0}
+  else if(!raf){last=performance.now();acc=0;fc=0;raf=requestAnimationFrame(frame)}
+});
+last=performance.now();raf=requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
